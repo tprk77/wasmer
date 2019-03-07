@@ -1,7 +1,8 @@
 use crate::export::Export;
-use hashbrown::{hash_map::Entry, HashMap};
+use hashbrown::{hash_map::Entry, HashMap, HashSet};
 
 pub trait LikeNamespace {
+    fn get_all_exports(&self) -> HashMap<String, Export>;
     fn get_export(&self, name: &str) -> Option<Export>;
 }
 
@@ -41,7 +42,7 @@ pub struct ImportObject {
 }
 
 impl ImportObject {
-    /// Create a new `ImportObject`.  
+    /// Create a new `ImportObject`.
     pub fn new() -> Self {
         Self {
             map: HashMap::new(),
@@ -79,6 +80,46 @@ impl ImportObject {
     pub fn get_namespace(&self, namespace: &str) -> Option<&(dyn LikeNamespace + 'static)> {
         self.map.get(namespace).map(|namespace| &**namespace)
     }
+
+    pub fn merged(mut imports_a: ImportObject, mut imports_b: ImportObject) -> Self {
+        let all_names: HashSet<String> = imports_a
+            .map
+            .keys()
+            .chain(imports_b.map.keys())
+            .cloned()
+            .collect();
+        let mut combined_imports = ImportObject::new();
+        for name in all_names {
+            match (imports_a.map.remove(&name), imports_b.map.remove(&name)) {
+                (Some(namespace_a), Some(namespace_b)) => {
+                    // Create a combined namespace
+                    let mut combined_namespace = Namespace {
+                        map: HashMap::new(),
+                    };
+                    let mut exports_a = namespace_a.get_all_exports();
+                    let mut exports_b = namespace_b.get_all_exports();
+                    // Import from A will win over B
+                    combined_namespace.map.extend(exports_b.drain().map(
+                        |(export_name, export)| (export_name, Box::new(export) as Box<IsExport>),
+                    ));
+                    combined_namespace.map.extend(exports_a.drain().map(
+                        |(export_name, export)| (export_name, Box::new(export) as Box<IsExport>),
+                    ));
+                    combined_imports
+                        .map
+                        .insert(name, Box::new(combined_namespace));
+                }
+                (Some(namespace_a), None) => {
+                    combined_imports.map.insert(name, namespace_a);
+                }
+                (None, Some(namespace_b)) => {
+                    combined_imports.map.insert(name, namespace_b);
+                }
+                (None, None) => panic!("Unreachable"),
+            }
+        }
+        combined_imports
+    }
 }
 
 pub struct Namespace {
@@ -102,6 +143,13 @@ impl Namespace {
 }
 
 impl LikeNamespace for Namespace {
+    fn get_all_exports(&self) -> HashMap<String, Export> {
+        self.map
+            .iter()
+            .map(|(name, is_export)| (name.to_string(), is_export.to_export()))
+            .collect()
+    }
+
     fn get_export(&self, name: &str) -> Option<Export> {
         self.map.get(name).map(|is_export| is_export.to_export())
     }
